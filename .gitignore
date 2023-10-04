@@ -1,0 +1,8 @@
+__pycache__/
+.vscode/
+data/cifar-10-batches-py/
+libtorch/
+models/
+FuzzyCNN.ipynb
+*.csv
+
