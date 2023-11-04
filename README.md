@@ -23,3 +23,31 @@ In this code, the model comprises the following components:
     Combines the output of the fuzzy component and the dense layer component through concatenation. After concatenation, the two representations are fused using another `nn.Linear` layer.
 
 Note: I switched the activation function from sigmoid to ReLU because using sigmoid was resulting in slow convergence.
+
+## Experiments
+
+The main focus of my current experiment revolves around examining how the number of membership function nodes affects the model's performance during training. To address this, I have employed a two-layer Deep Neural Network (DNN) as a baseline, with 16 neurons in the intermediate layer. As for the Linear Layers in FuzzyNet, each layer is configured with 8 neurons.
+
+### Baseline Model
+![](./images/baseline.png)
+The image above represents the performance of the Baseline model. It is evident that convergence during training is relatively unstable, and it requires a higher number of epochs to reach convergence.
+
+### FuzzyNet - G2
+![](./images/G2.png)
+`FuzzyNet - G2` means every feature goes through 2 membership function. It seems that the variation of training data and validation data during training are slightly smaller than `Baseline Model`. Also it took lesser epoch for `FuzzyNet` to converge.
+
+### FuzzyNet - G4
+![](./images/G4.png)
+`FuzzyNet - G4` means every feature goes through 4 membership function. The variation seems to get smaller than `FuzzyNet - G4`.
+
+### FuzzyNet - G16
+![](./images/G16.png)
+`FuzzyNet - G2` means every feature goes through 2 membership function.
+
+### FuzzyNet - G32
+![](./images/G32.png)
+`FuzzyNet - G2` means every feature goes through 2 membership function.
+
+### FuzzyNet - G64
+![](./images/G64.png)
+`FuzzyNet - G2` means every feature goes through 2 membership function.
