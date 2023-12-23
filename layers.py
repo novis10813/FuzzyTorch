@@ -1,170 +1,169 @@
 import torch
 import torch.nn as nn
-from typing import List, Union
+from typing import Union
+
+
+"""This is an implementation of traditional ANFIS architecture.
+FuzzyLayer:
+"""
+
+
+def gaussian_membership_function(x, c, sigma):
+    return torch.exp(-(((x - c) / (2 * sigma**2)).pow(2)))
+
+
+def linear_membership_function(x, c, a):
+    return a * (x - c) + 0.5
+
+
+def bell_shape_membership_function(x, c, a, b=2.0):
+    return 1 / (1 + torch.abs((x - c) / a) ** (2 * b))
+
+
+membership_functions = {
+    "gaussian": gaussian_membership_function,
+    "bell": bell_shape_membership_function,
+    "linear": linear_membership_function,
+}
+
+
+class Fuzzification(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        membership_function: str = "gaussian",
+        initializer_centers: Union[torch.Tensor, None] = None,
+        initializer_sigmas: Union[torch.Tensor, None] = None,
+        **kwargs,
+    ):
+        super(Fuzzification, self).__init__()
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+        
+        self.membership_function = membership_function
+        self.output_dim = output_dim
+        self.initializer_centers = initializer_centers
+        self.initializer_sigmas = initializer_sigmas
+        self.input_dim = input_dim
+        self.fuzzy_degree = nn.Parameter(torch.randn(self.input_dim, self.output_dim))
+        if self.initializer_centers is not None:
+            self.fuzzy_degree.data = self.initializer_centers
+
+        self.sigma = nn.Parameter(torch.ones(self.input_dim, self.output_dim))
+        if self.initializer_sigmas is not None:
+            self.sigma.data = self.initializer_sigmas
+
+        # bell-shape membership function
+        if self.membership_function == "bell":
+            # set bell-shape shape parameter to 2
+            self.b = nn.Parameter(torch.ones(self.input_dim, self.output_dim)*2)
+            if self.initializer_shape is not None:
+                self.b.data = self.initializer_shape
+            
+        # 之後可以加入不同的 membership function
+        if membership_function in membership_functions:
+            self.membership_function = membership_functions[membership_function]
+        else:
+            raise ValueError(
+                f"Membership function {membership_function} is not supported."
+            )
+
+    def forward(self, x):
+        # x 的 shape [batch_size, input_dim]
+        # 最終為 [batch_size, input_dim, output_dim (k)]
+        input_variables = []
+        # expand x for broadcasting
+        batch_size = x.shape[0]
+        expanded_x = x.unsqueeze(-1)  # [batch_size, input_dim, 1]
+        input_variables.append(expanded_x)
+
+        # expand fuzzy_degree and sigma for broadcasting
+        expanded_fuzzy_degree = self.fuzzy_degree.unsqueeze(0).expand(
+            batch_size, -1, -1
+        )  # [batch_size, input_dim, output_dim]
+        input_variables.append(expanded_fuzzy_degree)
+        expanded_sigma = self.sigma.unsqueeze(0).expand(
+            batch_size, -1, -1
+        )  # [batch_size, input_dim, output_dim]
+        input_variables.append(expanded_sigma)
+
+        if self.membership_function == "bell":
+            expanded_b = self.b.unsqueeze(0).expand(batch_size, -1, -1)
+            input_variables.append(expanded_b)
+        
+        # calculate fuzzy degree
+        fuzzy_out = self.membership_function(*input_variables)
+        
+        return fuzzy_out
+
+
+class FuzzyAndRuleLayer(nn.Module):
+    def __init__(self):
+        super(FuzzyAndRuleLayer, self).__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.min(x, dim=1).values
+
+
+class FuzzyOrRuleLayer(nn.Module):
+    def __init__(self):
+        super(FuzzyOrRuleLayer, self).__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.max(x, dim=1).values
+
+
+class SubLayer(nn.Module):
+    def __init__(self, output_dim):
+        super(SubLayer, self).__init__()
+        self.linear = nn.Linear(1, output_dim)
+
+    def forward(self, x):
+        x = x.unsqueeze(-1)
+        return self.linear(x)
+
+
+class NormalizationLayer(nn.Module):
+    def __init__(self):
+        super(NormalizationLayer, self).__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x / torch.sum(x, dim=1, keepdim=True)
 
 
 class FuzzyLayer(nn.Module):
     def __init__(
-        self,
-        input_dim: int,
-        output_dim: int,
-        initialiser_centers: Union[float, None] = None,
-        initialiser_sigmas: Union[float, None] = None,
+        self, input_dim: int, k: int, output_dim: int
     ):
         super(FuzzyLayer, self).__init__()
-        self.output_dim = output_dim
-        self.initialiser_centers = initialiser_centers
-        self.initialiser_sigmas = initialiser_sigmas
         self.input_dim = input_dim
-        self.fuzzy_degree = nn.Parameter(torch.Tensor(self.input_dim, self.output_dim))
-        if self.initialiser_centers is not None:
-            self.fuzzy_degree.data = self.initialiser_centers
-        else:
-            nn.init.uniform_(self.fuzzy_degree.data)
-
-        self.sigma = nn.Parameter(torch.Tensor(self.input_dim, self.output_dim))
-        if self.initialiser_sigmas is not None:
-            self.sigma.data = self.initialiser_sigmas
-        else:
-            nn.init.ones_(self.sigma.data)
+        self.output_dim = k
+        self.fuzzification = Fuzzification(
+            input_dim=self.input_dim, output_dim=self.output_dim, membership_function="gaussian"
+        )
+        # self.sublayer = Fuzzification(input_dim=self.input_dim, output_dim=self.output_dim, membership_function="linear")
+        self.sublayer = SubLayer(output_dim=self.output_dim)
+        self.fuzzy_and_rule_layer = FuzzyAndRuleLayer()
+        self.fuzzy_or_rule_layer = FuzzyOrRuleLayer()
+        self.normalization_layer = NormalizationLayer()
+        self.defuzzification = nn.Linear(self.input_dim * 2, output_dim)
 
     def forward(self, x):
-        x = x.unsqueeze(-1).expand(-1, -1, self.output_dim)
-        fuzzy_out = torch.exp(
-            -torch.sum(((x - self.fuzzy_degree) / (self.sigma**2)).pow(2), dim=-2)
-        )
-        return fuzzy_out
-
-
-class FuzzyRuleLayer(nn.Module):
-    def __init__(self):
-        super(FuzzyRuleLayer, self).__init__()
-
-    def forward(self, x: List[torch.Tensor]) -> torch.Tensor:
-        out = torch.ones_like(x[0])
-        for i in range(len(x)):
-            out *= x[i]
-
-        return out
-
-
-class MFLayer(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        fuzzy_num: int,
-        initialiser_centers=None,
-        initialiser_sigmas=None,
-    ):
-        super(MFLayer, self).__init__()
-        self.input_dim = input_dim
-        self.fuzzy_num = fuzzy_num
-        # initialize fuzzy layer for one feature
-        self.member_functions = nn.ModuleList(
-            [
-                FuzzyLayer(
-                    1,
-                    self.fuzzy_num,
-                    initialiser_centers,
-                    initialiser_sigmas,
-                )
-                for _ in range(self.input_dim)
-            ]
-        )
-        self.multiplication_layer = FuzzyRuleLayer()
-
-    def forward(self, x) -> torch.Tensor:
-        fuzz = [
-            self.member_functions[i](x[:, i].unsqueeze(1))
-            for i in range(self.input_dim)
-        ]
-        x = self.multiplication_layer(fuzz)
-        return x
-
-
-class DenseLayer(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int,
-        output_dim: int,
-        dropout: Union[float, None] = None,
-    ):
-        super(DenseLayer, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.dense = nn.Sequential(
-            nn.Linear(self.input_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Dropout(dropout) if dropout is not None else nn.Identity(),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, output_dim),
-            nn.BatchNorm1d(output_dim),
-            nn.Dropout(dropout) if dropout is not None else nn.Identity(),
-            nn.ReLU(),
-        )
-
-    def forward(self, x):
-        return self.dense(x)
-
-
-class FusionLayer(nn.Module):
-    def __init__(
-        self, fuzzy_dim: int, dense_dim: int, output_dim, dropout: Union[float, None] = None
-    ):
-        super(FusionLayer, self).__init__()
-        self.fuzzy_dim = fuzzy_dim
-        self.dense_dim = dense_dim
-        if dropout is not None:
-            self.dropout = nn.Dropout(dropout)
-        else:
-            self.dropout = nn.Identity()
+        # first pass to membership function
+        out = self.fuzzification(x)
+        sub = self.sublayer(x)
         
-        self.fusion = nn.Linear(self.fuzzy_dim + self.dense_dim, output_dim)
-        self.batch_norm = nn.BatchNorm1d(output_dim)
+        # use both AND and OR rule
+        x1 = self.fuzzy_and_rule_layer(out)
+        x1 = self.normalization_layer(x1)  # 64, k
+        
+        x2 = self.fuzzy_or_rule_layer(out)
+        x2 = self.normalization_layer(x2)
+        
 
-    def forward(self, dense, fuzzy):
-        out = self.fusion(torch.cat([dense, fuzzy], dim=-1))
-        out = self.batch_norm(out)
-        out = self.dropout(out)
-        return torch.relu(out)
-
-
-class FDNN(nn.Module):
-    def __init__(
-        self,
-        input_dim: int,
-        fuzzy_num: int,
-        hidden_dim: int,
-        fusion_out: int,
-        output_dim: int,
-        dropout: Union[float, None] = None,
-        initialiser_centers: Union[float, None] = None,
-        initialiser_sigmas: Union[float, None] = None,
-    ):
-        super(FDNN, self).__init__()
-        self.input_dim = input_dim
-        self.fuzzy_num = fuzzy_num
-        self.hidden_dim = hidden_dim
-        self.fusion_out = fusion_out
-        self.output_dim = output_dim
-        self.mf_layer = MFLayer(
-            self.input_dim,
-            self.fuzzy_num,
-            initialiser_centers,
-            initialiser_sigmas,
-        )
-        self.dense = DenseLayer(
-            self.input_dim, self.hidden_dim, self.fuzzy_num, dropout=dropout
-        )
-        self.fusion = FusionLayer(self.fuzzy_num, self.fuzzy_num, self.fusion_out, dropout=dropout)
-        # working layer
-        self.output_layer = nn.Linear(self.fusion_out, self.output_dim)
-
-    def forward(self, x):
-        # fuzzy layer
-        fuzzy = self.mf_layer(x)
-        dense = self.dense(x)  # shape (batch_size, fusion_in)
-        # fuse fuzzy and dense
-        fusion = self.fusion(dense, fuzzy)
-        return self.output_layer(fusion).squeeze(1)
+        # defuzzification
+        x1_sub = torch.sum(x1.unsqueeze(1) * sub, dim=2) # (batch_size, input_dim)
+        x2_sub = torch.sum(x2.unsqueeze(1) * sub, dim=2) # (batch_size, input_dim)
+        out = self.defuzzification(torch.cat([x1_sub, x2_sub], dim=1))
+        return out.squeeze(1)
